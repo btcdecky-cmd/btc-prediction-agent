@@ -19,9 +19,14 @@
   </div>
   <script>
     async function load() {
+      const out = document.getElementById('out');
       const r = await fetch('/predict');
+      if (!r.ok) {
+        out.innerHTML = '<p>Live BTC price is unavailable right now. Please try again shortly.</p>';
+        return;
+      }
       const d = await r.json();
-      document.getElementById('out').innerHTML = `
+      out.innerHTML = `
         <p><strong>Price:</strong> $${d.price}</p>
         <p><strong>5min:</strong> <span class="${d.prediction_5min.toLowerCase()}">${d.prediction_5min}</span></p>
         <p><strong>10min:</strong> <span class="${d.prediction_10min.toLowerCase()}">${d.prediction_10min}</span></p>

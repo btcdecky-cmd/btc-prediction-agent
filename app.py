@@ -3,7 +3,7 @@ BTC short-term prediction agent (FastAPI).
 Fetches live price and applies simple range-bound momentum logic.
 Not financial advice.
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -18,19 +18,43 @@ static_dir = Path("static")
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-async def get_btc_price() -> float:
-    """Fetch current BTC price from CoinGecko."""
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
-                timeout=10.0,
-            )
-            data = r.json()
-            return float(data["bitcoin"]["usd"])
-    except Exception:
-        return 80600.0  # fallback
+async def _get_json(url: str, params: dict) -> dict:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
+async def _coingecko_price() -> float:
+    data = await _get_json(
+        "https://api.coingecko.com/api/v3/simple/price",
+        {"ids": "bitcoin", "vs_currencies": "usd"},
+    )
+    return float(data["bitcoin"]["usd"])
+
+async def _coinbase_price() -> float:
+    data = await _get_json(
+        "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+        {},
+    )
+    return float(data["data"]["amount"])
+
+# Keyless public spot sources; the first one that answers wins.
+PRICE_SOURCES = (("coingecko", _coingecko_price), ("coinbase", _coinbase_price))
+
+async def get_btc_price() -> dict:
+    """Current BTC spot price in USD from the first reachable source."""
+    for name, fetch in PRICE_SOURCES:
+        try:
+            price = await fetch()
+            if price > 0:
+                return {
+                    "price": price,
+                    "source": name,
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                }
+        except Exception:
+            continue
+    raise HTTPException(status_code=503, detail="Could not fetch BTC price")
 
 def analyze(price: float) -> dict:
     """Simple range analysis based on recent observed zone ~80.3k-80.7k."""
@@ -63,13 +87,17 @@ async def root():
 
 @app.get("/price")
 async def price():
-    p = await get_btc_price()
-    return {"btc_usd": p}
+    quote = await get_btc_price()
+    return {
+        "btc_usd": quote["price"],
+        "source": quote["source"],
+        "timestamp": quote["timestamp"],
+    }
 
 @app.get("/predict")
 async def predict(timeframe: str = "5min"):
-    p = await get_btc_price()
-    analysis = analyze(p)
+    quote = await get_btc_price()
+    analysis = analyze(quote["price"])
     analysis["timeframe"] = timeframe
     return analysis
 
